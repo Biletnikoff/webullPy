@@ -1,0 +1,5 @@
+{
+  "telegram_token": "YOUR_TELEGRAM_TOKEN",
+  "webull_email": "your_email@example.com",
+  "webull_password": "your_password"
+}
