@@ -6,3 +6,5 @@
 /venv
 did.bin
 
+config.json
+webull_token.json
