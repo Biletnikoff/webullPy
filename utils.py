@@ -5,6 +5,7 @@ from venv import logger
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Updater, CommandHandler, MessageHandler, CallbackContext
 import webull
+from api import cancel_option_order
 
 def load_config(file_path: str) -> dict:
     with open(file_path, 'r') as f:
@@ -17,7 +18,7 @@ def get_order_prep(wb:webull,trading_code, status='All'):
     return orders
 
 def send_cancel_order_message(update: Update, context: CallbackContext, wb: webull, trading_code, ticker) -> None:
-    orders = get_order_prep(wb,trading_code, 'Filled')
+    orders = get_order_prep(wb,trading_code, 'Working')
     for order in orders:
         if order['comboId'] and order['ticker'] == ticker and order['comboType'] == 'MASTER':
             keyboard = [
@@ -37,7 +38,7 @@ def send_cancel_order_message(update: Update, context: CallbackContext, wb: webu
     )
 
 def select_ticker_to_cancel_prompt(update: Update, context: CallbackContext, wb: webull, trading_code) -> None:
-    orders = get_order_prep(wb,trading_code, 'Filled')
+    orders = get_order_prep(wb,trading_code, 'Working')
     keyboard = []
     for order in orders:
         if order['comboId'] and order['comboType'] == 'MASTER':
@@ -51,7 +52,7 @@ def select_ticker_to_cancel_prompt(update: Update, context: CallbackContext, wb:
 
 #TODO: refactor two functions below to be more DRY-friendly 
 def cancel_orders_by_ticker(update: Update, context: CallbackContext, wb: webull, trading_code, ticker) -> None:
-    orders = get_order_prep(wb,trading_code, 'Filled')
+    orders = get_order_prep(wb,trading_code, 'Working')
     for order in orders:
         if order['comboId'] and order['ticker'] == ticker and order['comboType'] == 'MASTER':
             canceled_order = wb.cancel_order_otoco(order['orderId'])
@@ -62,20 +63,73 @@ def cancel_orders_by_ticker(update: Update, context: CallbackContext, wb: webull
                 edit_message(update, context, text=f"Unable to Cancelled order {order['orderId']}")
 
 def cancel_all_orders( update: Update, context: CallbackContext, wb: webull ,trading_code) -> None:
-    orders = get_order_prep(wb,trading_code, 'Filled')
+    orders = group_by_combo_id(get_order_prep(wb,trading_code, 'All'))
     for order in orders:
         #check if order is an OTOCO order   
-        if order['comboId'] and order['comboType'] == 'MASTER':
-            canceled_order = wb.cancel_order_otoco(order['comboId'])
+        if order['comboId']:
+            master = order['suborders'][0]['orders'][0]
+            stop = order['suborders'][1]['orders'][0]
+            profit = order['suborders'][2]['orders'][0]
 
+            order_id1 = master['orderId']
+            order_id2 = stop['orderId']
+            order_id3 = profit['orderId']
+            wb.cancel_order(order_id1)
+            canceled_order_profit = wb.cancel_order(order_id2)
+            canceled_order_stop = wb.cancel_order(order_id3)
+            print(canceled_order_profit)
             # Check if the order was successfully canceled greater than 0
-            if canceled_order.get('success', False) and canceled_order['success'] > 0:
+            if canceled_order_profit.get('success', False) and canceled_order_profit['success'] > 0:
                edit_message(update, context, text=f"Cancelled order {order['comboId']}")
-            else:
+            else: 
+                print(canceled_order_profit)
                 edit_message(update, context, text=f"Unable to Cancelled order {order['comboId']}")
 
+def split_option_order(update: Update, context: CallbackContext, wb: webull, trading_code) -> None:
+    open_option_orders = group_by_combo_id(get_order_prep(wb,trading_code, 'All'))
+    for order in open_option_orders:
+        master = order['suborders'][0]['orders'][0]
+        stop = order['suborders'][1]['orders'][0]
+        profit = order['suborders'][2]['orders'][0]
+        #
+        print('adsfljsdklj>>')
+        # Calculate the new quantity for the new and modified orders
+        original_quant = master['totalQuantity']
+        
+        # string to number
+        string_original_quant = int(original_quant)
+
+        # new_quant = string_original_quant // 2
+        modified_quant = string_original_quant - 1
+
+        # Get the existing prices
+        existing_price = master['lmtPrice']
+        existing_stop_loss_price = stop['auxPrice']
+        existing_limit_profit_price = profit['lmtPrice']
+
+        stop = order['suborders'][1]['orders'][0]
+        profit = order['suborders'][2]['orders'][0]
+        canceled_order_profit = wb.cancel_order(profit['orderId'])
+        canceled_order_stop = wb.cancel_order(stop['orderId'])
+        modified_order_profit = wb.modify_order_option(
+                    order=profit,
+                    stpPrice=existing_stop_loss_price,
+                    lmtPrice=existing_limit_profit_price,
+                    enforce='DAY',
+                    quant=modified_quant
+                )
+        modified_order_stop = wb.modify_order_option(
+                    order=stop,
+                    stpPrice=existing_stop_loss_price,
+                    lmtPrice=existing_limit_profit_price,
+                    enforce='DAY',
+                    quant=modified_quant
+        )
+        print(modified_order_profit)
+        return modified_order_profit
+
 def split_otoco_order(update: Update, context: CallbackContext, wb: webull, trading_code) -> None:
-    orders = group_by_combo_id(get_order_prep(wb,trading_code, 'Filled'))
+    orders = group_by_combo_id(get_order_prep(wb,trading_code, 'Working'))
     for order in orders:
         # Check if the order is an OTOCO order
         if order['comboId']:
@@ -102,16 +156,18 @@ def split_otoco_order(update: Update, context: CallbackContext, wb: webull, trad
             existing_stop_loss_price = stop['auxPrice']
             existing_limit_profit_price = profit['lmtPrice']
 
+            cancel_all_order
+
             # Modify the existing OTOCO order with the modified quantity
             if modified_quant > 0:
-                modified_order = wb.modify_order_otoco(
+                modified_order = wb.modify_order_option(
                     order_id1=order_id1,
                     order_id2=order_id2,
                     order_id3=order_id3,
                     stock=master['symbol'],
                     price=existing_price,
-                    stop_loss_price=existing_stop_loss_price,
-                    limit_profit_price=existing_limit_profit_price,
+                    stpPrice=existing_stop_loss_price,
+                    lmtPrice=existing_limit_profit_price,
                     time_in_force='DAY',
                     quant=modified_quant
                 )
@@ -267,7 +323,8 @@ def button_handler(update: Update, context: CallbackContext, wb, trading_code) -
     if command == "login":
         login(update, context)
     elif command == "split_orders":
-        split_otoco_order(update, context, wb, trading_code=trading_code)
+        print('split_orders')
+        split_option_order(update, context, wb, trading_code=trading_code)
     elif command == "cancel_all_orders":
         print(context.user_data)
         cancel_all_orders(update, context, wb, trading_code=trading_code)
